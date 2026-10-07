@@ -34,6 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib" / "claude-
 import gitfresh  # noqa: E402
 
 HOME = Path.home()
+# A key bound in a window manager starts with a minimal PATH, and claude and the other
+# tools live in ~/.local/bin: put it first, for this program and for what it starts.
+_LOCAL_BIN = str(HOME / ".local" / "bin")
+if _LOCAL_BIN not in os.environ.get("PATH", "").split(":"):
+    os.environ["PATH"] = _LOCAL_BIN + ":" + os.environ.get("PATH", "")
 PROJECTS = Path(os.environ.get("CLAUDE_PICK_STORE", HOME / ".claude" / "projects"))
 CODE = gitfresh.PROJECTS_DIR             # CLAUDE_PROJECTS_DIR, default ~/Zeke_projects
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-pick" / "cache.json"

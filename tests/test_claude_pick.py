@@ -3,6 +3,8 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -175,6 +177,20 @@ class TestLaunch(Base):
         self.assertIn("claude-fresh", inner[2])                      # updates the project first
         self.assertEqual(inner[-2:], [str(self.home), "abc-123"])    # then claude -r <id>
         self.assertIn("claude -r", inner[2])
+
+
+class TestPath(unittest.TestCase):
+    def test_local_bin_is_on_the_path_even_when_started_with_a_minimal_one(self):
+        import subprocess as sp
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        code = ("import importlib.machinery as m, importlib.util as u, os;"
+                f"l=m.SourceFileLoader('c', {str(SCRIPT)!r}); s=u.spec_from_loader('c', l);"
+                "mod=u.module_from_spec(s); l.exec_module(mod); print(os.environ['PATH'])")
+        out = sp.run([sys.executable, "-I", "-c", code], env={"HOME": home, "PATH": "/usr/bin"},
+                     capture_output=True, text=True).stdout.strip()
+        self.assertEqual(out.split(":")[0], f"{home}/.local/bin")
+        self.assertIn("/usr/bin", out.split(":"))
 
 
 class TestTerminals(Base):
