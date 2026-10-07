@@ -11,7 +11,7 @@ How I start, continue and cut Claude Code sessions with these tools. A session b
 | Continue the last session without being asked | `claude-new --last` |
 | Start the next numbered session without being asked | `claude-new --new` |
 | Bring the project up to date from GitHub by hand | `claude-fresh [folder]` (it also runs before every session) |
-| Open an older session that has no name | `claude -r` in its folder, and pick it from the list |
+| Open an older session that has no name | `claude -r` in its folder, and pick it from the list; `claude-pick` lists it too |
 
 Leaving a session is `/exit` or Ctrl+D. It is saved, and I continue it later from the same folder.
 
@@ -20,6 +20,12 @@ Leaving a session is `/exit` or Ctrl+D. It is saved, and I continue it later fro
 A session that has gone on for a long time answers more slowly and starts to forget, because the context is full. The red dot in `claude-pick` (from 50% of the window) is my signal, but the same is true when I move to an unrelated task. A new session begins with an empty context, so it is fast and focused, and the project files carry what matters.
 
 Before I leave the old session, I ask Claude to update the state docs of the project: `docs/STATE.md`, `docs/CHANGELOG.md` and `docs/DECISIONS.md`. The plan and the open decisions go in the "In progress" section of `STATE.md`, because the new session only knows what was written down and what git shows. After that, I commit and push, so the other computer finds it too.
+
+## How a session is named
+
+The name is `<path>_NNN@<machine>`: the path of the folder from `~` with dashes instead of slashes (`home` in `~`), a three-digit number, and the computer that started it. For example, `Zeke_projects-mini-calendar_002@arch` is the second session of `~/Zeke_projects/mini-calendar`, started on the computer named `arch`. The machine does not matter when `claude-new` looks for the last session or the next number, so a folder keeps one sequence even if two computers add to it.
+
+Older names, `<machine>_<folder>_NNN`, still count. Names that follow neither scheme are shown by `claude-pick` as they are, but `claude-new` does not use them for the numbering.
 
 ## Where the sessions are
 

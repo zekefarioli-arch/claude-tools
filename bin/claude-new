@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Start a Claude Code session for a folder, named <machine>_<folder>_NNN (in ~
-# the folder part is "home"). The numbers come from the sessions Claude
-# already saved for that folder, so there is no counter file to keep in sync.
-# <machine> tells computers apart when they share the same account and
-# configs: the first 4 characters of /etc/machine-id (unique per install,
-# unlike a hostname I may have repeated), or the text of
-# ~/.config/claude-new/machine if I want a readable name such as "arch".
+# Start a Claude Code session for a folder, named <path>_NNN@<machine>, for example
+# Zeke_projects-mini-calendar_002@arch. <path> is the folder's path from ~ with the
+# slashes turned into dashes ("home" in ~), so two folders that end in the same name
+# stay apart. The numbers come from the sessions Claude already saved for that
+# folder, so there is no counter file to keep in sync.
+# <machine> tells computers apart when they share the same account and configs: the
+# first 4 characters of /etc/machine-id (unique per install, unlike a hostname I may
+# have repeated), or the text of ~/.config/claude-new/machine if I want a readable
+# name such as "arch". It only labels the session: to find the last session of a
+# folder and the next number, the sessions of every machine count, so if the sessions
+# of two computers are ever in the same place the numbers do not collide. Names made
+# before this scheme (<machine>_<folder>_NNN, this machine only) still count.
 #   claude-new               this folder
 #   claude-new myproj        $CLAUDE_PROJECTS_DIR/myproj (default ~/Zeke_projects), or any folder path
 #   claude-new myproj -m x   everything after the folder goes to claude
@@ -15,12 +20,12 @@
 # claude-pick (the rofi launcher) uses two non-interactive modes, given first:
 #   claude-new --new [folder] [claude args]    next number, no question
 #   claude-new --last [folder] [claude args]   continue the last one, no question
-# A folder with no named session starts at 001. If it has some, the last one is
-# shown and you choose: Enter continues it, n starts the next number.
+# A folder with no named session starts at 001. If it has some, the most recent one
+# is shown and you choose: Enter continues it, n starts the next number.
 # A new session starts with an empty context, so answers stay fast and
 # focused; ~/CLAUDE.md and Claude's memory carry what matters across.
-# Sessions are stored per machine, so they are never shared across computers;
-# what travels is the code, the docs and the projects on GitHub.
+# Sessions are stored per machine unless you copy them; what travels by itself is the
+# code, the docs and the projects on GitHub.
 set -eu
 
 mode=ask
@@ -39,20 +44,33 @@ fi
 
 machine=$(head -n1 "${XDG_CONFIG_HOME:-$HOME/.config}/claude-new/machine" 2>/dev/null || true)
 [ -n "$machine" ] || machine=$(head -c4 /etc/machine-id)
-if [ "$dir" = "$HOME" ]; then folder=home; else folder=$(basename "$dir"); fi
-base="${machine}_${folder}_"
+# <path>: the folder's path from ~ (or the absolute path outside ~), unusual characters as dashes
+if [ "$dir" = "$HOME" ]; then
+    folder=home legacy="${machine}_home_"
+else
+    rel=${dir#"$HOME"/}
+    [ "$rel" != "$dir" ] || rel=${dir#/}
+    folder=$(printf '%s' "$rel" | sed 's/[^A-Za-z0-9._]/-/g')
+    legacy="${machine}_$(basename "$dir")_"      # the old scheme: <machine>_<last folder>_NNN
+fi
 
 # Claude keeps a folder's sessions in ~/.claude/projects/<path, non-alphanumerics -> '->,
 # and the name we gave each one in its custom-title line.
 store="$HOME/.claude/projects/$(printf '%s' "$dir" | sed 's/[^A-Za-z0-9]/-/g')"
-last_n=0 last_id="" last_name=""
+max_n=0 last_m=0 last_id="" last_name="" last_file=""
 for f in "$store"/*.jsonl; do
     [ -e "$f" ] || continue
     t=$(grep -o '"customTitle":"[^"]*"' "$f" | tail -1 | cut -d'"' -f4 || true)
-    case "$t" in "$base"[0-9][0-9][0-9]) ;; *) continue ;; esac
-    n=$((10#${t#"$base"}))
-    if [ "$n" -gt "$last_n" ]; then
-        last_n=$n last_name=$t last_id=$(basename "$f" .jsonl) last_file=$f
+    case "$t" in
+        "${folder}_"[0-9][0-9][0-9]|"${folder}_"[0-9][0-9][0-9]@*) rest=${t#"${folder}_"} ;;
+        "$legacy"[0-9][0-9][0-9]) rest=${t#"$legacy"} ;;
+        *) continue ;;
+    esac
+    n=$((10#${rest:0:3}))
+    if [ "$n" -gt "$max_n" ]; then max_n=$n; fi
+    m=$(stat -c %Y "$f")
+    if [ "$m" -gt "$last_m" ]; then
+        last_m=$m last_name=$t last_id=$(basename "$f" .jsonl) last_file=$f
     fi
 done
 
@@ -62,7 +80,7 @@ cd "$dir"
 if command -v claude-fresh >/dev/null 2>&1 && ! claude-fresh "$dir"; then
     if [ -t 0 ]; then read -r -p "Enter to go on, Ctrl+C to stop: " _ || true; fi
 fi
-next=$(printf '%s%03d' "$base" $((last_n + 1)))
+next=$(printf '%s_%03d@%s' "$folder" $((max_n + 1)) "$machine")
 case "$mode:$last_id" in
     new:*)   exec claude -n "$next" "$@" ;;
     last:?*) exec claude -r "$last_id" "$@" ;;
