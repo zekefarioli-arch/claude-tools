@@ -17,11 +17,17 @@ each folder with ↑ (commits not pushed), ✎ (uncommitted files) and ↓ (behi
 number in ~/.config/claude-pick/window (default 200000); a session that is
 already above it means the window is bigger, and 1000000 is assumed.
 
-Usage: claude-pick          open the launcher
-       claude-pick --list   print the first list as text (no rofi)
+Console mode (no screen, no rofi): the same lists as numbered menus in the terminal you are in,
+and the session starts in that same terminal. It is what `claudio` runs, and claude-pick falls
+back to it by itself when there is no display (a TTY, ssh) or no rofi.
+
+Usage: claude-pick            open the launcher (rofi, or the console menus without a display)
+       claude-pick --console  force the console menus (same as `claudio`)
+       claude-pick --list     print the first list as text (no rofi)
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -339,20 +345,140 @@ def terminal_argv(terminal, folder, title, command):
     return [terminal, "-e", *command]          # any other terminal that accepts -e
 
 
-def launch(folder, action, session=None):
-    name = Path(folder).name if Path(folder) != HOME else "home"
+def session_command(folder, action, session=None):
+    """The command that starts the chosen session (the same for the rofi and the console mode)."""
     if action == "resume":
         # claude-new does the update check for new sessions; a resumed one needs it here
-        inner = ["bash", "-c", 'claude-fresh "$1" || read -r -p "Enter to go on, Ctrl+C to stop: " _; '
-                               'exec claude -r "$2"', "claude-pick", folder, session["id"]]
-    else:
-        inner = ["claude-new", "--new", folder] + ([HANDOFF] if action == "handoff" else [])
+        return ["bash", "-c", 'claude-fresh "$1" || read -r -p "Enter to go on, Ctrl+C to stop: " _; '
+                              'exec claude -r "$2"', "claude-pick", folder, session["id"]]
+    return ["claude-new", "--new", folder] + ([HANDOFF] if action == "handoff" else [])
+
+
+def launch(folder, action, session=None):
+    name = Path(folder).name if Path(folder) != HOME else "home"
+    inner = session_command(folder, action, session)
     terminal = choose_terminal()
     if terminal is None:
         sys.exit("claude-pick: no terminal found (tried " + ", ".join(TERMINALS) +
                  "); set CLAUDE_TERMINAL or ~/.config/claude-tools/terminal")
     subprocess.Popen(terminal_argv(terminal, folder, f"Claude · {name}", inner), cwd=folder,
                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# ---- console mode ------------------------------------------------------------
+
+ANSI = {GREEN: "32", YELLOW: "33", RED: "31", DIM: "90"}
+
+
+def colour_line(plain, use_colour):
+    """Colour the context percentage of a row like the dot of the rofi list."""
+    if not use_colour:
+        return plain
+    m = re.search(r"(?<=\s)(\d{1,3})%", plain)
+    if not m:
+        return plain
+    code = ANSI[colour(int(m.group(1)))]
+    return plain[:m.start()] + f"\033[{code}m{m.group(0)}\033[0m" + plain[m.end():]
+
+
+def console_menu(title, plains, ask=input, out=print, width=100, use_colour=False):
+    """A numbered menu. A number picks a row, text filters the rows, Enter picks the first one
+    shown, "/" shows all again, q or Ctrl+D leaves. Returns an index of plains, or None."""
+    shown = list(range(len(plains)))
+    while True:
+        out(f"\n{title}")
+        for n, i in enumerate(shown, 1):
+            out(f"{n:>3}  " + colour_line(plains[i][:max(20, width - 6)], use_colour))
+        try:
+            ans = ask("number, text to filter, Enter = 1, q = quit > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if ans == "":
+            return shown[0]
+        if ans.lower() in ("q", "quit"):
+            return None
+        if ans == "/":
+            shown = list(range(len(plains)))
+        elif ans.isdigit():
+            if 1 <= int(ans) <= len(shown):
+                return shown[int(ans) - 1]
+            out(f"no row {ans}")
+        else:
+            hit = [i for i in range(len(plains)) if ans.lower() in plains[i].lower()]
+            if hit:
+                shown = hit
+            else:
+                out(f"nothing matches '{ans}'")
+
+
+def browse_console(ask=input, out=print):
+    """Ask for a folder, with Tab completion of paths; returns the folder or None."""
+    try:
+        import readline
+        readline.set_completer_delims(" \t\n")
+
+        def complete(text, state):
+            base = os.path.expanduser(text)
+            head, tail = os.path.split(base)
+            try:
+                names = sorted(n for n in os.listdir(head or ".") if n.startswith(tail)
+                               and os.path.isdir(os.path.join(head, n)))
+            except OSError:
+                names = []
+            matches = [os.path.join(head, n) + "/" for n in names]
+            return matches[state] if state < len(matches) else None
+
+        readline.set_completer(complete)
+        readline.parse_and_bind("tab: complete")
+    except ImportError:
+        pass
+    while True:
+        try:
+            ans = ask("folder (Tab completes, Enter = ~, q = back) > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if ans.lower() == "q":
+            return None
+        folder = os.path.abspath(os.path.expanduser(ans or "~"))
+        if os.path.isdir(folder):
+            return folder
+        out(f"not a folder: {folder}")
+
+
+def have_display():
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def run_console(found, ask=input, out=print, execute=os.execvp):
+    """The two menus in the terminal, then the session starts in this same terminal."""
+    if not sys.stdin.isatty() and ask is input:
+        sys.exit("claudio: it needs a terminal to ask in (run it from a shell)")
+    width = shutil.get_terminal_size((100, 24)).columns
+    use_colour = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    rows = folder_rows(found)
+    legend = (f"green <{WARN_AT}%, yellow <{REFRESH_AT}%, red = start a new session "
+              f"(context of the last one)   ↑ not pushed  ✎ uncommitted  ↓ behind")
+    i = console_menu("Claude · pick a folder\n" + legend, [p for _, _, p in rows], ask, out, width, use_colour)
+    if i is None:
+        return
+    folder = rows[i][0]
+    if folder is None:
+        folder = browse_console(ask, out)
+        if folder is None:
+            return
+    sessions = found.get(folder)
+    if sessions:
+        srows = session_rows(sessions)
+        title = "home" if Path(folder) == HOME else Path(folder).name
+        j = console_menu(f"{title} · pick a session", [p for _, _, _, p in srows], ask, out, width, use_colour)
+        if j is None:
+            return
+        action, session = srows[j][0], srows[j][1]
+    else:
+        action, session = "new", None
+    os.chdir(folder)
+    cmd = session_command(folder, action, session)
+    execute(cmd[0], cmd)
 
 
 def main():
@@ -362,6 +488,9 @@ def main():
     if "--list" in sys.argv:
         for _, _, plain in folder_rows(found):
             print(plain)
+        return
+    if "--console" in sys.argv or not have_display() or not shutil.which("rofi"):
+        run_console(found)
         return
     rows = folder_rows(found)
     i = rofi("Claude", [m for _, m, _ in rows],

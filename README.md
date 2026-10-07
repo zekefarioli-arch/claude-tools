@@ -13,6 +13,7 @@ These three problems have the same root: nothing checks the situation before Cla
 | Command | What it does |
 |---|---|
 | `claude-pick` | A rofi launcher: you choose a folder, then a session, and it opens a new terminal with Claude in it. It shows how full each session is and whether the folder has unpushed work. |
+| `claudio` | The same launcher without a screen: numbered menus in the terminal you are in. `claude-pick` falls back to it by itself when there is no display. |
 | `claude-new` | Starts or continues the session of a folder, named `<path>_NNN@<machine>`. |
 | `claude-fresh` | Brings the project up to date from GitHub before Claude starts, but only when that is safe. |
 
@@ -36,6 +37,22 @@ The dot is green below 35%, yellow below 50% and red from 50%. The percentage is
 When a session is in the red, the second list puts **New session with handoff** first. The handoff starts an empty session whose first message asks Claude to read the state docs of the project, to run `git status` and `git log`, and to tell me where we were. It only knows what was written down, so I keep a short "In progress" section in `docs/STATE.md` and ask Claude to update it before I leave a long session.
 
 The percentage depends on the size of the window, which I had to assume: 200,000 tokens by default. If a session is already above that number, the script assumes a window of 1,000,000.
+
+## Without a screen: claudio
+
+`claudio` is `claude-pick` for a terminal with nothing else around it: a TTY, ssh from my phone, or any day when rofi is not installed. It shows the same two lists, with the same context percentages and git marks, as numbered menus, and the session starts in the very same terminal. It is the printed menu next to the touchscreen: the dishes are the same.
+
+```
+Claude · pick a folder
+  1  ~  System (home)                    71%   1011 replies    8 MB  1 min ago  refresh?  ✎
+  2  ~/Zeke_projects/claude-tools       no sessions yet  ✎
+  3  Other folder…
+number, text to filter, Enter = 1, q = quit >
+```
+
+In each menu, a number picks a row, any text filters the rows, Enter picks the first one shown, `/` shows all of them again and `q` leaves. "Other folder…" asks for a path, with Tab completion. `claude-pick` also falls back to this mode by itself when it finds no display or no rofi, so the key I bind never fails without telling me why.
+
+It is one program and not two: `claudio` only runs `claude-pick --console`, so the data and the rules live in one place, and a bug fixed in one is fixed in both. The price is that the filter is a plain substring, without the fuzzy matching that rofi has, and that it needs a real terminal to ask in.
 
 ## Keeping the project up to date
 

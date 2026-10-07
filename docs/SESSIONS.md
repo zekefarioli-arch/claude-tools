@@ -7,6 +7,7 @@ How I start, continue and cut Claude Code sessions with these tools. A session b
 | What I want | Command |
 |---|---|
 | Choose a folder and a session in rofi, with the context usage of each | the key bound to `claude-pick` |
+| The same, in a terminal without a screen (a TTY, ssh) | `claudio` |
 | Start or continue the session of a folder in the terminal | `claude-new` (in the folder, or `claude-new myproject` for a folder of the projects directory) |
 | Continue the last session without being asked | `claude-new --last` |
 | Start the next numbered session without being asked | `claude-new --new` |

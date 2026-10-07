@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# claudio: claude-pick without a screen. The same folders, context percentages and git marks as
+# numbered menus in the terminal you are in, and the session starts right there. It is for a
+# TTY, for ssh from the phone, or for any time there is no rofi; claude-pick runs it by itself
+# when it finds no display.
+exec "$(dirname "$(readlink -f "$0")")/claude-pick" --console "$@"
