@@ -5,7 +5,8 @@ First list: ~ (system, the default), the folders Claude has already worked in
 (most recent first, each with how full the context of its last session is),
 then the other folders of the projects folder (~/Zeke_projects, or CLAUDE_PROJECTS_DIR), then
 "Other folder...".
-Second list: that folder's sessions. The context percentage is the size of the
+Second list: that folder's sessions. The session opens in a new window of your terminal
+(alacritty, wezterm, kitty, foot, terminator or xterm; see CLAUDE_TERMINAL). The context percentage is the size of the
 prompt in the session's last reply (input + cache tokens) over the window; from
 REFRESH_AT percent it suggests a new session, with a handoff message that makes
 Claude read the project docs and say where we were.
@@ -21,6 +22,7 @@ Usage: claude-pick          open the launcher
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -303,6 +305,35 @@ def browse(start):
         cur = path
 
 
+# How to open a command in a new window of each terminal, in the order they are tried
+# when none is chosen: name -> function(folder, title, command) -> argv.
+TERMINALS = {
+    "alacritty": lambda d, t, c: ["alacritty", "--class", "claude-session", "-T", t,
+                                  "--working-directory", d, "-e", *c],
+    "wezterm": lambda d, t, c: ["wezterm", "start", "--class", "claude-session", "--cwd", d, "--", *c],
+    "kitty": lambda d, t, c: ["kitty", "--class", "claude-session", "--title", t, "--directory", d, *c],
+    "foot": lambda d, t, c: ["foot", "--app-id", "claude-session", "--title", t,
+                             "--working-directory", d, *c],
+    "terminator": lambda d, t, c: ["terminator", f"--title={t}", f"--working-directory={d}", "-x", *c],
+    "xterm": lambda d, t, c: ["xterm", "-class", "claude-session", "-T", t, "-e", *c],
+}
+
+
+def choose_terminal():
+    """CLAUDE_TERMINAL, or the `terminal` file of ~/.config/claude-tools, or the first
+    installed terminal of TERMINALS; None if there is none."""
+    chosen = os.environ.get("CLAUDE_TERMINAL") or gitfresh.config_value("terminal")
+    if chosen:
+        return chosen
+    return next((t for t in TERMINALS if shutil.which(t)), None)
+
+
+def terminal_argv(terminal, folder, title, command):
+    if terminal in TERMINALS:
+        return TERMINALS[terminal](folder, title, command)
+    return [terminal, "-e", *command]          # any other terminal that accepts -e
+
+
 def launch(folder, action, session=None):
     name = Path(folder).name if Path(folder) != HOME else "home"
     if action == "resume":
@@ -311,8 +342,11 @@ def launch(folder, action, session=None):
                                'exec claude -r "$2"', "claude-pick", folder, session["id"]]
     else:
         inner = ["claude-new", "--new", folder] + ([HANDOFF] if action == "handoff" else [])
-    subprocess.Popen(["alacritty", "--class", "claude-session", "-T", f"Claude · {name}",
-                      "--working-directory", folder, "-e"] + inner,
+    terminal = choose_terminal()
+    if terminal is None:
+        sys.exit("claude-pick: no terminal found (tried " + ", ".join(TERMINALS) +
+                 "); set CLAUDE_TERMINAL or ~/.config/claude-tools/terminal")
+    subprocess.Popen(terminal_argv(terminal, folder, f"Claude · {name}", inner), cwd=folder,
                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

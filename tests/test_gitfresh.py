@@ -31,6 +31,10 @@ class Machines(unittest.TestCase):
         self.commit(self.a, "one.txt")
         run(self.a, "git", "push", "-u", "origin", "main")
         run(self.tmp, "git", "clone", str(self.remote), str(self.b))
+        # never read the real ~/.config/claude-tools/repos: it lists my real repositories
+        p = mock.patch.object(gitfresh, "REPOS_FILE", self.tmp / "no-such-repos-file")
+        p.start()
+        self.addCleanup(p.stop)
         for k, v in ENV.items():                      # git in the code under test uses os.environ
             p = mock.patch.dict(os.environ, {k: v})
             p.start()
@@ -163,6 +167,24 @@ class TestFreshen(Machines):
 
     def test_attention_statuses_make_the_cli_stop(self):
         self.assertEqual(gitfresh.ATTENTION, {"dirty-behind", "diverged", "failed"})
+
+
+class TestConfigFiles(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        p = mock.patch.object(gitfresh, "CONFIG_DIR", self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_the_first_line_is_the_value_and_a_tilde_is_expanded(self):
+        (self.tmp / "projects_dir").write_text("~/Projects\nignored\n")
+        self.assertEqual(gitfresh.config_value("projects_dir"), os.path.expanduser("~/Projects"))
+
+    def test_a_missing_or_empty_file_is_none(self):
+        self.assertIsNone(gitfresh.config_value("nothing"))
+        (self.tmp / "empty").write_text("\n  \n")
+        self.assertIsNone(gitfresh.config_value("empty"))
 
 
 class TestBadgesInTheMenu(unittest.TestCase):

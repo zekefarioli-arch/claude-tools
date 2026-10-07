@@ -10,8 +10,9 @@ In ~ there is no single project, so it works on the "home project" (by default
 ~/dotfiles, where the configs and the docs live) and on the other repos that travel
 between computers and are not inside the projects folder (by default this tool itself,
 plus the paths listed one per line in ~/.config/claude-tools/repos). The places can be
-changed with environment variables: CLAUDE_PROJECTS_DIR (default ~/Zeke_projects) and
-CLAUDE_HOME_PROJECT (default ~/dotfiles).
+changed with environment variables or, for programs that do not inherit them (a key bound
+in a window manager), with one-line files in ~/.config/claude-tools: CLAUDE_PROJECTS_DIR or
+`projects_dir` (default ~/Zeke_projects), and CLAUDE_HOME_PROJECT (default ~/dotfiles).
 """
 import os
 import re
@@ -19,10 +20,23 @@ import subprocess
 from pathlib import Path
 
 HOME = Path.home()
-PROJECTS_DIR = Path(os.environ.get("CLAUDE_PROJECTS_DIR", HOME / "Zeke_projects"))
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "claude-tools"
+
+
+def config_value(name):
+    """First line of ~/.config/claude-tools/<name> (a ~ is expanded), or None."""
+    try:
+        lines = (CONFIG_DIR / name).read_text().strip().splitlines()
+    except OSError:
+        return None
+    return os.path.expanduser(lines[0].strip()) if lines and lines[0].strip() else None
+
+
+PROJECTS_DIR = Path(os.environ.get("CLAUDE_PROJECTS_DIR") or config_value("projects_dir")
+                    or HOME / "Zeke_projects")
 HOME_PROJECT = Path(os.environ.get("CLAUDE_HOME_PROJECT", HOME / "dotfiles"))
 EXTRA = [PROJECTS_DIR / "claude-tools"]   # updated too when Claude is opened in ~
-REPOS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "claude-tools" / "repos"
+REPOS_FILE = CONFIG_DIR / "repos"
 FETCH_TIMEOUT = 4   # seconds; without network or access the update is skipped
 
 # Statuses that need me to look at them before going on (claude-fresh exits 2)

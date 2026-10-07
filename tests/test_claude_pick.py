@@ -150,9 +150,11 @@ class TestFormat(Base):
 
 
 class TestLaunch(Base):
-    def run_launch(self, folder, action, session=None):
-        with mock.patch.object(cp.subprocess, "Popen") as popen:
+    def run_launch(self, folder, action, session=None, terminal="alacritty"):
+        with mock.patch.object(cp, "choose_terminal", return_value=terminal), \
+                mock.patch.object(cp.subprocess, "Popen") as popen:
             cp.launch(str(folder), action, session)
+        self.popen = popen
         return popen.call_args[0][0]
 
     def test_new_session_goes_through_claude_new(self):
@@ -173,6 +175,73 @@ class TestLaunch(Base):
         self.assertIn("claude-fresh", inner[2])                      # updates the project first
         self.assertEqual(inner[-2:], [str(self.home), "abc-123"])    # then claude -r <id>
         self.assertIn("claude -r", inner[2])
+
+
+class TestTerminals(Base):
+    CMD = ["claude-new", "--new", "/work/foo"]
+
+    def argv(self, terminal):
+        return cp.terminal_argv(terminal, "/work/foo", "Claude · foo", self.CMD)
+
+    def test_every_known_terminal_ends_with_the_command_and_knows_the_folder(self):
+        for name in cp.TERMINALS:
+            argv = self.argv(name)
+            self.assertEqual(argv[0], name)
+            self.assertEqual(argv[-3:], self.CMD, name)
+            self.assertTrue(any("/work/foo" in a for a in argv[:-3]) or name == "xterm", name)
+
+    def test_the_options_of_each_terminal(self):
+        self.assertIn("--working-directory", self.argv("alacritty"))
+        self.assertEqual(self.argv("wezterm")[1:3], ["start", "--class"])
+        self.assertIn("--cwd", self.argv("wezterm"))
+        self.assertIn("--directory", self.argv("kitty"))
+        self.assertIn("--working-directory=/work/foo", self.argv("terminator"))
+        self.assertIn("-x", self.argv("terminator"))
+        self.assertIn("--title=Claude · foo", self.argv("terminator"))
+
+    def test_an_unknown_terminal_is_given_dash_e(self):
+        self.assertEqual(self.argv("mytty"), ["mytty", "-e", *self.CMD])
+
+    def test_the_environment_variable_wins(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_TERMINAL": "kitty"}):
+            self.assertEqual(cp.choose_terminal(), "kitty")
+
+    def test_the_config_file_is_used_without_the_variable(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_TERMINAL"}
+        (self.tmp / "terminal").write_text("foot\n")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(cp.gitfresh, "CONFIG_DIR", self.tmp):
+            self.assertEqual(cp.choose_terminal(), "foot")
+
+    def test_detection_follows_the_order_of_the_table(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_TERMINAL"}
+        have = {"terminator", "wezterm"}                      # alacritty is missing, as on my Arch
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(cp.gitfresh, "CONFIG_DIR", self.tmp / "none"), \
+                mock.patch.object(cp.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}" if t in have else None):
+            self.assertEqual(cp.choose_terminal(), "wezterm")  # before terminator in the table
+
+    def test_no_terminal_at_all(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_TERMINAL"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(cp.gitfresh, "CONFIG_DIR", self.tmp / "none"), \
+                mock.patch.object(cp.shutil, "which", return_value=None):
+            self.assertIsNone(cp.choose_terminal())
+
+    def test_launch_without_a_terminal_says_what_to_set(self):
+        with mock.patch.object(cp, "choose_terminal", return_value=None), \
+                mock.patch.object(cp.subprocess, "Popen") as popen:
+            with self.assertRaises(SystemExit) as ctx:
+                cp.launch(str(self.home), "new")
+        self.assertIn("CLAUDE_TERMINAL", str(ctx.exception))
+        popen.assert_not_called()
+
+    def test_launch_starts_the_terminal_inside_the_folder(self):
+        with mock.patch.object(cp, "choose_terminal", return_value="wezterm"), \
+                mock.patch.object(cp.subprocess, "Popen") as popen:
+            cp.launch(str(self.home / "Zeke_projects" / "busy"), "new")
+        self.assertEqual(popen.call_args.kwargs["cwd"], str(self.home / "Zeke_projects" / "busy"))
+        self.assertEqual(popen.call_args[0][0][:2], ["wezterm", "start"])
 
 
 if __name__ == "__main__":

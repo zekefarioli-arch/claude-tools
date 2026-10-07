@@ -13,7 +13,7 @@ These three problems have the same root: nothing checks the situation before Cla
 | Command | What it does |
 |---|---|
 | `claude-pick` | A rofi launcher: you choose a folder, then a session, and it opens a new terminal with Claude in it. It shows how full each session is and whether the folder has unpushed work. |
-| `claude-new` | Starts or continues the session of a folder, named `<machine>_<folder>_NNN`. |
+| `claude-new` | Starts or continues the session of a folder, named `<path>_NNN@<machine>`. |
 | `claude-fresh` | Brings the project up to date from GitHub before Claude starts, but only when that is safe. |
 
 The three of them share one small Python module, `lib/claude-tools/gitfresh.py`, which does the git work.
@@ -55,11 +55,15 @@ The main cost is the network: a slow connection adds up to four seconds before e
 
 ## Session names
 
-`claude-new` names a session `<machine>_<folder>_NNN`, for example `arch_dotfiles_002`, where the folder part is `home` in `~`. The machine part is the first four characters of `/etc/machine-id`, or the text of `~/.config/claude-new/machine` if I want a readable name. The numbers come from the sessions Claude already saved for that folder, so there is no counter file to keep in sync.
+`claude-new` names a session `<path>_NNN@<machine>`, for example `Zeke_projects-mini-calendar_002@arch`. The path part is the path of the folder from `~` with the slashes turned into dashes, and it is `home` in `~`. Using the whole path keeps `~/work/app` and `~/Zeke_projects/app` apart, which the last folder name alone could not do.
 
-It has two modes without questions, which `claude-pick` uses: `claude-new --new [folder]` starts the next number, and `claude-new --last [folder]` continues the last session. Without a flag, it shows the last session and asks whether to continue it or to start a new one.
+The machine part comes after the `@` and it only labels the session. It is the first four characters of `/etc/machine-id`, or the text of `~/.config/claude-new/machine` if I want a readable name such as `arch`. To find the last session of a folder and the next number, `claude-new` ignores the machine: the most recent session wins, and the next number is the highest one plus one. For this reason, if the sessions of two computers ever end up in the same place, the numbers do not collide and a folder lists the work of both. The numbers come from the sessions that Claude already saved, so there is no counter file to keep in sync.
 
-At the moment, the sessions stay on the computer where they were created. The names already carry the machine, so sharing them is a matter of copying files, which I have not done yet.
+Sessions named with my first scheme, `<machine>_<folder>_NNN`, keep working: the ones of this computer still count for the numbering and for finding the last session.
+
+It has two modes without questions, which `claude-pick` uses: `claude-new --new [folder]` starts the next number, and `claude-new --last [folder]` continues the most recent session. Without a flag, it shows the most recent session and asks whether to continue it or to start a new one.
+
+At the moment, the sessions stay on the computer where they were created. The names already work across machines, so sharing them is a matter of copying files, which I have not done yet.
 
 ## Installation
 
@@ -77,7 +81,7 @@ cd ~/Zeke_projects/claude-tools
 | Python 3 | The three commands use only its standard library. |
 | git | `claude-fresh` and the git marks. |
 | rofi | The two lists of `claude-pick`. |
-| alacritty | The terminal that `claude-pick` opens. |
+| A terminal | alacritty, wezterm, kitty, foot, terminator or xterm; `claude-pick` opens each session in a new window of the first one it finds, or of the one you choose. |
 
 Then I bind a key to `claude-pick`. In i3 or sway it is one line, `bindsym $mod+a exec claude-pick`; in my xmonad it is an action in a small config file.
 
@@ -85,7 +89,8 @@ Then I bind a key to `claude-pick`. In i3 or sway it is one line, `bindsym $mod+
 
 | Setting | Default | What it changes |
 |---|---|---|
-| `CLAUDE_PROJECTS_DIR` | `~/Zeke_projects` | The folder whose subfolders appear in the first list, and where `claude-new myproject` looks. |
+| `CLAUDE_PROJECTS_DIR`, or `~/.config/claude-tools/projects_dir` | `~/Zeke_projects` | The folder whose subfolders appear in the first list, and where `claude-new myproject` looks. The file is the way to set it for a key bound in a window manager, which does not inherit environment variables. |
+| `CLAUDE_TERMINAL`, or `~/.config/claude-tools/terminal` | the first installed of alacritty, wezterm, kitty, foot, terminator, xterm | The terminal in which `claude-pick` opens a session. Any other name is run as `NAME -e command`. |
 | `CLAUDE_HOME_PROJECT` | `~/dotfiles` | The repository that `~` stands for. |
 | `~/.config/claude-tools/repos` | none | More repositories to update when Claude is opened in `~`, one path per line. This repository is always included. |
 | `~/.config/claude-pick/window` | 200000 | The context window used for the percentage. |

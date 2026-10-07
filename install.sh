@@ -28,18 +28,24 @@ done
 if [ "$deps" = yes ]; then
     # command -> package name, per package manager
     if command -v pacman >/dev/null 2>&1; then
-        mgr="sudo pacman -S --needed"; pkgs="rofi:rofi alacritty:alacritty git:git python3:python"
+        mgr="sudo pacman -S --needed"; pkgs="rofi:rofi git:git python3:python"
     elif command -v dnf >/dev/null 2>&1; then
-        mgr="sudo dnf install -y";      pkgs="rofi:rofi alacritty:alacritty git:git python3:python3"
+        mgr="sudo dnf install -y";      pkgs="rofi:rofi git:git python3:python3"
     elif command -v apt-get >/dev/null 2>&1; then
-        mgr="sudo apt-get install -y";  pkgs="rofi:rofi alacritty:alacritty git:git python3:python3"
+        mgr="sudo apt-get install -y";  pkgs="rofi:rofi git:git python3:python3"
     else
-        mgr=""; pkgs=""; echo "No pacman, dnf or apt found: install rofi, alacritty, git and python3 yourself."
+        mgr=""; pkgs=""; echo "No pacman, dnf or apt found: install rofi, a terminal, git and python3 yourself."
     fi
     missing=""
     for pair in $pkgs; do
         command -v "${pair%%:*}" >/dev/null 2>&1 || missing="$missing ${pair#*:}"
     done
+    # claude-pick opens each session in a terminal; any of these will do
+    have_term=no
+    for t in alacritty wezterm kitty foot terminator xterm; do
+        command -v "$t" >/dev/null 2>&1 && have_term=yes
+    done
+    [ "$have_term" = yes ] || [ -z "$mgr" ] || missing="$missing alacritty"
     if [ -n "$missing" ]; then
         echo "Installing:$missing"
         $mgr $missing
