@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Rofi launcher for Claude Code: pick a folder, then a session, in a new terminal.
+
+First list: ~ (system, the default), the folders Claude has already worked in
+(most recent first, each with how full the context of its last session is),
+then the other folders of the projects folder (~/Zeke_projects, or CLAUDE_PROJECTS_DIR), then
+"Other folder...".
+Second list: that folder's sessions. The context percentage is the size of the
+prompt in the session's last reply (input + cache tokens) over the window; from
+REFRESH_AT percent it suggests a new session, with a handoff message that makes
+Claude read the project docs and say where we were.
+
+Sessions are started through claude-new (names, numbering). Before any session, claude-fresh
+brings the project up to date from GitHub when it is only behind and clean; the first list marks
+each folder with ↑ (commits not pushed), ✎ (uncommitted files) and ↓ (behind, as last fetched). Window size: the
+number in ~/.config/claude-pick/window (default 200000); a session that is
+already above it means the window is bigger, and 1000000 is assumed.
+
+Usage: claude-pick          open the launcher
+       claude-pick --list   print the first list as text (no rofi)
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+from html import escape
+from pathlib import Path
+
+# the library sits next to bin/ in the repo, whether the script is run through a symlink or not
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib" / "claude-tools"))
+import gitfresh  # noqa: E402
+
+HOME = Path.home()
+PROJECTS = Path(os.environ.get("CLAUDE_PICK_STORE", HOME / ".claude" / "projects"))
+CODE = gitfresh.PROJECTS_DIR             # CLAUDE_PROJECTS_DIR, default ~/Zeke_projects
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "claude-pick" / "cache.json"
+WINDOW_FILE = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "claude-pick" / "window"
+DEFAULT_WINDOW = 200_000
+BIG_WINDOW = 1_000_000
+WARN_AT, REFRESH_AT = 35, 50          # percent of the window
+GREEN, YELLOW, RED, DIM = "#a6e3a1", "#f9e2af", "#f38ba8", "#6c7086"   # Catppuccin Mocha
+BLUE = "#89b4fa"                      # git badges: ↑ not pushed, ✎ uncommitted, ↓ behind
+
+# The docs hold what was written down; git shows what was changed and not committed yet.
+# In ~ the project is the home project (by default the dotfiles repo, ~/dotfiles).
+_HOME_PROJECT = str(gitfresh.HOME_PROJECT).replace(str(HOME), "~", 1)
+HANDOFF = ("This is a new session to continue the work of the previous one. Read the "
+           "project's state docs (docs/STATE.md, including its 'In progress' section, "
+           "docs/CHANGELOG.md and docs/DECISIONS.md, if they exist; in ~ they are in "
+           f"{_HOME_PROJECT}/docs), and run git status -sb (it shows commits not pushed) and "
+           f"git log --oneline -8 in the project (in ~, in {_HOME_PROJECT}). Tell me in a few "
+           "lines where we were, what is uncommitted and what is pending, and ask me if the "
+           "docs look behind. Do not change anything yet.")
+
+
+# ---- reading sessions -------------------------------------------------------
+
+def window_size():
+    try:
+        return int(WINDOW_FILE.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return DEFAULT_WINDOW
+
+
+def last_context(path, size):
+    """Tokens in the prompt of the last real assistant reply, read from the end of the file."""
+    chunk = 256 * 1024
+    with open(path, "rb") as f:
+        while True:
+            start = max(0, size - chunk)
+            f.seek(start)
+            lines = f.read(size - start).split(b"\n")
+            if start > 0:
+                lines = lines[1:]          # first line may be cut
+            for line in reversed(lines):
+                if b'"type":"assistant"' not in line or b'"usage"' not in line:
+                    continue
+                try:
+                    msg = json.loads(line).get("message") or {}
+                except ValueError:
+                    continue
+                usage = msg.get("usage") or {}
+                if msg.get("model") == "<synthetic>":
+                    continue
+                total = (usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+                         + usage.get("cache_creation_input_tokens", 0))
+                if total:
+                    return total
+            if start == 0:
+                return 0
+            chunk *= 4
+
+
+def scan(path):
+    """Everything claude-pick needs from one session file (cached by mtime and size)."""
+    st = path.stat()
+    key = str(path)
+    cache = scan.cache
+    hit = cache.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    title = ai_title = cwd = ""
+    replies = 0
+    with open(path, "rb") as f:
+        for line in f:
+            if b'"type":"assistant"' in line:
+                replies += 1
+            elif b'"customTitle"' in line:
+                try:
+                    title = json.loads(line).get("customTitle") or title
+                except ValueError:
+                    pass
+            elif b'"aiTitle"' in line:
+                try:
+                    ai_title = json.loads(line).get("aiTitle") or ai_title
+                except ValueError:
+                    pass
+            if not cwd and b'"cwd"' in line:
+                try:
+                    cwd = json.loads(line).get("cwd") or ""
+                except ValueError:
+                    pass
+    info = {"title": title or ai_title or path.stem[:8], "cwd": cwd, "replies": replies,
+            "ctx": last_context(path, st.st_size) if st.st_size else 0}
+    cache[key] = [st.st_mtime_ns, st.st_size, info]
+    scan.dirty = True
+    return info
+
+
+scan.cache, scan.dirty = {}, False
+
+
+def load_cache():
+    try:
+        scan.cache = json.loads(CACHE.read_text())
+    except (OSError, ValueError):
+        scan.cache = {}
+
+
+def save_cache():
+    if not scan.dirty:
+        return
+    try:
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE.write_text(json.dumps(scan.cache))
+    except OSError:
+        pass
+
+
+def sessions_by_folder(store=None):
+    """{folder: [session dicts, newest first]} for every folder Claude has worked in."""
+    found = {}
+    for f in (store or PROJECTS).glob("*/*.jsonl"):
+        try:
+            info = dict(scan(f))
+            st = f.stat()
+        except OSError:
+            continue
+        cwd = info["cwd"]
+        if not cwd or not os.path.isdir(cwd):
+            continue
+        rel = os.path.relpath(cwd, HOME)
+        if rel.startswith("..") or any(p.startswith(".") for p in Path(rel).parts):
+            continue                       # outside ~, or hidden (headless helper sessions)
+        info.update(id=f.stem, mtime=st.st_mtime, size=st.st_size)
+        found.setdefault(cwd, []).append(info)
+    for lst in found.values():
+        lst.sort(key=lambda s: s["mtime"], reverse=True)
+    return found
+
+
+# ---- formatting -------------------------------------------------------------
+
+def percent(ctx, window=None):
+    window = window or window_size()
+    if ctx > window:
+        window = max(window, BIG_WINDOW)
+    return round(100 * ctx / window)
+
+
+def colour(pct):
+    return RED if pct >= REFRESH_AT else YELLOW if pct >= WARN_AT else GREEN
+
+
+def ago(ts, now=None):
+    s = (now or time.time()) - ts
+    if s < 3600:
+        return f"{max(1, int(s // 60))} min ago"
+    if s < 86400:
+        return f"{int(s // 3600)} h ago"
+    if s < 2 * 86400:
+        return "yesterday"
+    return f"{int(s // 86400)} d ago"
+
+
+def mib(n):
+    return f"{n / 1048576:.0f} MB" if n >= 1048576 else f"{max(1, n // 1024)} KB"
+
+
+def folder_label(path):
+    return "~  System (home)" if Path(path) == HOME else "~/" + os.path.relpath(path, HOME)
+
+
+def stats(s, window=None):
+    pct = percent(s["ctx"], window)
+    return pct, f"{pct:>3}%  {s['replies']:>5} replies  {mib(s['size']):>6}  {ago(s['mtime'])}"
+
+
+def mono(text):
+    return f"<span font_family='monospace'>{text}</span>"
+
+
+def folder_rows(found=None, window=None):
+    """[(folder or None for 'other', markup, plain)] for the first list."""
+    found = found if found is not None else sessions_by_folder()
+    folders = [str(HOME)] + [d for d in sorted(found, key=lambda d: -found[d][0]["mtime"])
+                             if Path(d) != HOME]
+    if CODE.is_dir():
+        folders += [str(p) for p in sorted(CODE.iterdir())
+                    if p.is_dir() and not p.name.startswith(".") and str(p) not in folders]
+    rows = []
+    for d in folders:
+        label = folder_label(d)
+        if d in found:
+            pct, text = stats(found[d][0], window)
+            mark = " <span foreground='%s'>refresh?</span>" % RED if pct >= REFRESH_AT else ""
+            markup = (f"<span foreground='{colour(pct)}'>●</span> {escape(label):<34} "
+                      f"<span foreground='{DIM}'>{escape(text)}</span>{mark}")
+            plain = f"{label:<34} {text}" + ("  refresh?" if pct >= REFRESH_AT else "")
+        else:
+            markup = f"<span foreground='{DIM}'>○</span> {escape(label):<34} <span foreground='{DIM}'>no sessions yet</span>"
+            plain = f"{label:<34} no sessions yet"
+        git_marks = gitfresh.badges(gitfresh.state(d))
+        if git_marks:
+            markup += f"  <span foreground='{BLUE}'>{escape(git_marks)}</span>"
+            plain += f"  {git_marks}"
+        rows.append((d, mono(markup), plain))
+    rows.append((None, mono("＋ Other folder…"), "Other folder…"))
+    return rows
+
+
+def session_rows(sessions, window=None):
+    """[(action, session or None, markup, plain)] for a folder that already has sessions.
+    actions: new, handoff, resume"""
+    last = sessions[0]
+    pct, _ = stats(last, window)
+    refresh = pct >= REFRESH_AT
+    new = ("new", None, "New session (empty)", "New session (empty)")
+    hand = ("handoff", None, "New session with handoff (reads the docs)" +
+            (f"  ← recommended, context at {pct}%" if refresh else ""),
+            "New session with handoff")
+    rows = []
+    cont = lambda s, first: ("resume", s, *[(("Continue: " if first else "") + s["title"])] * 2)
+    if refresh:
+        rows += [hand, new]
+    rows += [cont(last, True)]
+    if not refresh:
+        rows += [new, hand]
+    rows += [cont(s, False) for s in sessions[1:]]
+    out = []
+    for action, s, markup, plain in rows:
+        if s is not None:
+            p, text = stats(s, window)
+            markup = (f"<span foreground='{colour(p)}'>●</span> {escape(markup):<44} "
+                      f"<span foreground='{DIM}'>{escape(text)}</span>")
+            plain = f"{plain:<44} {text}"
+        else:
+            markup = f"<span foreground='{RED if refresh and action == 'handoff' else '#cdd6f4'}'>{escape(markup)}</span>"
+        out.append((action, s, mono(markup), plain))
+    return out
+
+
+# ---- rofi and launching -----------------------------------------------------
+
+def rofi(prompt, markups, mesg=None):
+    """Index of the chosen row, or None if cancelled."""
+    cmd = ["rofi", "-dmenu", "-i", "-markup-rows", "-matching", "fuzzy", "-format", "i",
+           "-p", prompt, "-no-custom"]
+    if mesg:
+        cmd += ["-mesg", mesg]
+    res = subprocess.run(cmd, input="\n".join(markups), text=True, capture_output=True)
+    try:
+        return int(res.stdout.strip()) if res.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def browse(start):
+    """Walk the folder tree in rofi; returns the chosen folder or None."""
+    cur = Path(start)
+    while True:
+        subs = sorted(p for p in cur.iterdir() if p.is_dir() and not p.name.startswith(".")) \
+            if cur.is_dir() else []
+        entries = [("use", cur), ("up", cur.parent)] + [("down", p) for p in subs]
+        labels = ["✔  Use this folder", "..  (up)"] + [f"›  {p.name}" for p in subs]
+        i = rofi(str(cur).replace(str(HOME), "~", 1), [escape(x) for x in labels])
+        if i is None:
+            return None
+        kind, path = entries[i]
+        if kind == "use":
+            return str(cur)
+        cur = path
+
+
+def launch(folder, action, session=None):
+    name = Path(folder).name if Path(folder) != HOME else "home"
+    if action == "resume":
+        # claude-new does the update check for new sessions; a resumed one needs it here
+        inner = ["bash", "-c", 'claude-fresh "$1" || read -r -p "Enter to go on, Ctrl+C to stop: " _; '
+                               'exec claude -r "$2"', "claude-pick", folder, session["id"]]
+    else:
+        inner = ["claude-new", "--new", folder] + ([HANDOFF] if action == "handoff" else [])
+    subprocess.Popen(["alacritty", "--class", "claude-session", "-T", f"Claude · {name}",
+                      "--working-directory", folder, "-e"] + inner,
+                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def main():
+    load_cache()
+    found = sessions_by_folder()
+    save_cache()
+    if "--list" in sys.argv:
+        for _, _, plain in folder_rows(found):
+            print(plain)
+        return
+    rows = folder_rows(found)
+    i = rofi("Claude", [m for _, m, _ in rows],
+             mesg=f"● context of the last session: green &lt;{WARN_AT}%, yellow &lt;{REFRESH_AT}%, "
+                  f"red = start a new one   ·   ↑ not pushed  ✎ uncommitted  ↓ behind")
+    if i is None:
+        return
+    folder = rows[i][0]
+    if folder is None:
+        folder = browse(HOME)
+        if folder is None:
+            return
+    sessions = found.get(folder)
+    if not sessions:
+        launch(folder, "new")
+        return
+    srows = session_rows(sessions)
+    j = rofi("home" if Path(folder) == HOME else Path(folder).name, [m for _, _, m, _ in srows])
+    if j is not None:
+        launch(folder, srows[j][0], srows[j][1])
+
+
+if __name__ == "__main__":
+    main()

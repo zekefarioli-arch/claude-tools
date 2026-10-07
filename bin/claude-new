@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Start a Claude Code session for a folder, named <machine>_<folder>_NNN (in ~
+# the folder part is "home"). The numbers come from the sessions Claude
+# already saved for that folder, so there is no counter file to keep in sync.
+# <machine> tells computers apart when they share the same account and
+# configs: the first 4 characters of /etc/machine-id (unique per install,
+# unlike a hostname I may have repeated), or the text of
+# ~/.config/claude-new/machine if I want a readable name such as "arch".
+#   claude-new               this folder
+#   claude-new myproj        $CLAUDE_PROJECTS_DIR/myproj (default ~/Zeke_projects), or any folder path
+#   claude-new myproj -m x   everything after the folder goes to claude
+# Before starting, claude-fresh updates the project from GitHub when it is only
+# behind and clean (in ~ it is the home project, ~/dotfiles by default), so the other
+# computer's work is here.
+# claude-pick (the rofi launcher) uses two non-interactive modes, given first:
+#   claude-new --new [folder] [claude args]    next number, no question
+#   claude-new --last [folder] [claude args]   continue the last one, no question
+# A folder with no named session starts at 001. If it has some, the last one is
+# shown and you choose: Enter continues it, n starts the next number.
+# A new session starts with an empty context, so answers stay fast and
+# focused; ~/CLAUDE.md and Claude's memory carry what matters across.
+# Sessions are stored per machine, so they are never shared across computers;
+# what travels is the code, the docs and the projects on GitHub.
+set -eu
+
+mode=ask
+case "${1:-}" in
+    --new)  mode=new;  shift ;;
+    --last) mode=last; shift ;;
+esac
+
+dir=$PWD
+if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+    if [ -d "$1" ]; then dir=$(cd "$1" && pwd)
+    elif [ -d "${CLAUDE_PROJECTS_DIR:-$HOME/Zeke_projects}/$1" ]; then dir="${CLAUDE_PROJECTS_DIR:-$HOME/Zeke_projects}/$1"
+    else echo "claude-new: no folder '$1'" >&2; exit 1; fi
+    shift
+fi
+
+machine=$(head -n1 "${XDG_CONFIG_HOME:-$HOME/.config}/claude-new/machine" 2>/dev/null || true)
+[ -n "$machine" ] || machine=$(head -c4 /etc/machine-id)
+if [ "$dir" = "$HOME" ]; then folder=home; else folder=$(basename "$dir"); fi
+base="${machine}_${folder}_"
+
+# Claude keeps a folder's sessions in ~/.claude/projects/<path, non-alphanumerics -> '->,
+# and the name we gave each one in its custom-title line.
+store="$HOME/.claude/projects/$(printf '%s' "$dir" | sed 's/[^A-Za-z0-9]/-/g')"
+last_n=0 last_id="" last_name=""
+for f in "$store"/*.jsonl; do
+    [ -e "$f" ] || continue
+    t=$(grep -o '"customTitle":"[^"]*"' "$f" | tail -1 | cut -d'"' -f4 || true)
+    case "$t" in "$base"[0-9][0-9][0-9]) ;; *) continue ;; esac
+    n=$((10#${t#"$base"}))
+    if [ "$n" -gt "$last_n" ]; then
+        last_n=$n last_name=$t last_id=$(basename "$f" .jsonl) last_file=$f
+    fi
+done
+
+cd "$dir"
+# Bring the project up to date with what the other computer pushed; it only
+# fast-forwards a clean, behind tree, and stops to show a warning otherwise.
+if command -v claude-fresh >/dev/null 2>&1 && ! claude-fresh "$dir"; then
+    if [ -t 0 ]; then read -r -p "Enter to go on, Ctrl+C to stop: " _ || true; fi
+fi
+next=$(printf '%s%03d' "$base" $((last_n + 1)))
+case "$mode:$last_id" in
+    new:*)   exec claude -n "$next" "$@" ;;
+    last:?*) exec claude -r "$last_id" "$@" ;;
+esac
+if [ -n "$last_id" ]; then
+    echo "Last session here: $last_name ($(date -r "$last_file" '+%Y-%m-%d %H:%M'))"
+    read -r -p "Enter = continue it, n = new $next: " ans
+    case "$ans" in
+        n|N) exec claude -n "$next" "$@" ;;
+        *)   exec claude -r "$last_id" "$@" ;;
+    esac
+fi
+exec claude -n "$next" "$@"
