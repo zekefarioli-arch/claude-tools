@@ -95,6 +95,17 @@ class TestFreshen(Machines):
         self.assertTrue((self.tmp / "dotfiles" / "two.txt").exists())
         self.assertTrue((self.tmp / "extra" / "two.txt").exists())
 
+    def test_the_repos_file_adds_more_repos_and_ignores_comments_and_missing_paths(self):
+        run(self.tmp, "git", "clone", str(self.remote), str(self.tmp / "dotfiles"))
+        run(self.tmp, "git", "clone", str(self.remote), str(self.tmp / "other"))
+        listing = self.tmp / "repos"
+        listing.write_text(f"# my repos\n\n{self.tmp}/other\n{self.tmp}/missing\n{self.tmp}/dotfiles\n")
+        with mock.patch.object(gitfresh, "HOME", self.tmp), \
+                mock.patch.object(gitfresh, "HOME_PROJECT", self.tmp / "dotfiles"), \
+                mock.patch.object(gitfresh, "EXTRA", []), \
+                mock.patch.object(gitfresh, "REPOS_FILE", listing):
+            self.assertEqual(gitfresh.targets(self.tmp), [self.tmp / "dotfiles", self.tmp / "other"])
+
     def test_one_repo_that_needs_attention_wins(self):
         run(self.tmp, "git", "clone", str(self.remote), str(self.tmp / "dotfiles"))
         run(self.tmp, "git", "clone", str(self.remote), str(self.tmp / "extra"))

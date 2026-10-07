@@ -49,7 +49,7 @@ Before every session, `claude-fresh` does what I would do by hand when I arrive 
 | Ahead only | It says how many commits are not pushed. It never pushes by itself. |
 | No network | It skips the update and says so. |
 
-In `~` there is no single project, so it works on the home project, `~/dotfiles` by default, and on this repository. The `claude-pick` list also resolves `~` to the home project when it draws the git marks.
+In `~` there is no single project, so it works on the home project, `~/dotfiles` by default, on this repository, and on any other repository listed in `~/.config/claude-tools/repos`. The `claude-pick` list also resolves `~` to the home project when it draws the git marks.
 
 The main cost is the network: a slow connection adds up to four seconds before each session. The `↓` mark in the list is only as fresh as the last fetch, so it is exact just after a project is opened.
 
@@ -87,6 +87,7 @@ Then I bind a key to `claude-pick`. In i3 or sway it is one line, `bindsym $mod+
 |---|---|---|
 | `CLAUDE_PROJECTS_DIR` | `~/Zeke_projects` | The folder whose subfolders appear in the first list, and where `claude-new myproject` looks. |
 | `CLAUDE_HOME_PROJECT` | `~/dotfiles` | The repository that `~` stands for. |
+| `~/.config/claude-tools/repos` | none | More repositories to update when Claude is opened in `~`, one path per line. This repository is always included. |
 | `~/.config/claude-pick/window` | 200000 | The context window used for the percentage. |
 | `~/.config/claude-new/machine` | first 4 of `/etc/machine-id` | The machine part of the session names. |
 

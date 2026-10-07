@@ -8,9 +8,10 @@ uncommitted changes.
 
 In ~ there is no single project, so it works on the "home project" (by default
 ~/dotfiles, where the configs and the docs live) and on the other repos that travel
-between computers and are not inside the projects folder (EXTRA, by default this
-tool itself). Both places can be changed with environment variables:
-CLAUDE_PROJECTS_DIR (default ~/Zeke_projects) and CLAUDE_HOME_PROJECT (default ~/dotfiles).
+between computers and are not inside the projects folder (by default this tool itself,
+plus the paths listed one per line in ~/.config/claude-tools/repos). The places can be
+changed with environment variables: CLAUDE_PROJECTS_DIR (default ~/Zeke_projects) and
+CLAUDE_HOME_PROJECT (default ~/dotfiles).
 """
 import os
 import re
@@ -21,6 +22,7 @@ HOME = Path.home()
 PROJECTS_DIR = Path(os.environ.get("CLAUDE_PROJECTS_DIR", HOME / "Zeke_projects"))
 HOME_PROJECT = Path(os.environ.get("CLAUDE_HOME_PROJECT", HOME / "dotfiles"))
 EXTRA = [PROJECTS_DIR / "claude-tools"]   # updated too when Claude is opened in ~
+REPOS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "claude-tools" / "repos"
 FETCH_TIMEOUT = 4   # seconds; without network or access the update is skipped
 
 # Statuses that need me to look at them before going on (claude-fresh exits 2)
@@ -39,11 +41,29 @@ def git(path, *args, timeout=5):
         return 124, ""
 
 
+def extra_repos():
+    """EXTRA plus the paths in REPOS_FILE (one per line, ~ allowed, # for comments)."""
+    found = list(EXTRA)
+    try:
+        for line in REPOS_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                found.append(Path(os.path.expanduser(line)))
+    except OSError:
+        pass
+    return found
+
+
 def targets(folder):
-    """The folders whose git state matters: the home project (and EXTRA) for ~, the folder itself otherwise."""
+    """The folders whose git state matters: the home project and the extra repos for ~,
+    the folder itself otherwise."""
     folder = Path(folder)
-    found = [HOME_PROJECT] + EXTRA if folder == HOME else [folder]
-    return [p for p in found if p.is_dir()]
+    found = [HOME_PROJECT] + extra_repos() if folder == HOME else [folder]
+    unique = []
+    for p in found:
+        if p.is_dir() and p not in unique:
+            unique.append(p)
+    return unique
 
 
 def target(folder):
