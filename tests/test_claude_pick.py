@@ -236,6 +236,35 @@ class TestConsoleMenu(unittest.TestCase):
         self.assertIn("\033[31m90%", cp.colour_line("x  90%  y", True))
         self.assertEqual(cp.colour_line("no sessions yet", True), "no sessions yet")
 
+    def test_fuzzy_matching_supports_subsequence_and_words(self):
+        self.assertTrue(cp.matches("f2b", "~/p/fail2ban_rust 93%"))
+        self.assertTrue(cp.matches("p beta", "~/p/beta 90%"))
+        self.assertTrue(cp.matches("alpha", "~/p/alpha 36%"))
+        self.assertFalse(cp.matches("zzz", "~/p/beta 90%"))
+
+    def test_format_console_line_adapts_to_narrow_terminals(self):
+        long_line = "~/Zeke_projects/ia_general_workflow_improvement/03_tollbooth  53%    503 replies   20 MB  6 min ago  refresh?  ✎"
+        wide = cp.format_console_line(long_line, 120, False)
+        self.assertEqual(wide, long_line)
+
+        narrow = cp.format_console_line(long_line, 45, False)
+        self.assertLessEqual(len(narrow), 40)
+        self.assertIn("53%", narrow)
+        self.assertIn("✎", narrow)
+        self.assertIn("refresh?", narrow)
+        self.assertIn("03_tollbooth", narrow)
+
+    def test_fuzzy_matching_in_menu_picks_matching_row(self):
+        # "pb" matches "~/p/beta" as subsequence
+        index, lines = self.pick("pb", "1")
+        self.assertEqual(index, 2)
+
+    def test_fit_label_strips_project_prefix_and_truncates(self):
+        self.assertEqual(cp.fit_label("~/Zeke_projects/simple", 30), "~/Zeke_projects/simple")
+        self.assertEqual(cp.fit_label("~/Zeke_projects/simple", 15), "simple")
+        self.assertEqual(cp.fit_label("~/Zeke_projects/very_long_project_name/sub", 20), "very_long_proje…/sub")
+        self.assertEqual(cp.fit_label("~/Zeke_projects/very_long_project_name/sub", 5), "…/sub")
+
 
 class TestConsoleFlow(Base):
     busy = property(lambda self: self.home / "Zeke_projects" / "busy")

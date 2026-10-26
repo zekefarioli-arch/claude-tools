@@ -381,16 +381,169 @@ def colour_line(plain, use_colour):
     return plain[:m.start()] + f"\033[{code}m{m.group(0)}\033[0m" + plain[m.end():]
 
 
+def fit_label(label, max_len):
+    """Shorten a folder or session label to fit in max_len."""
+    if len(label) <= max_len:
+        return label
+    # Slashes (folder paths): try stripping ~/some_folder/
+    m = re.match(r"^(~/[^/]+)/(.*)$", label)
+    if m:
+        sub = m.group(2)
+        if len(sub) <= max_len:
+            return sub
+        label = sub
+    if len(label) <= max_len:
+        return label
+    if "/" in label:
+        parts = label.split("/")
+        last = parts[-1]
+        first = parts[0]
+        if len(last) + 2 <= max_len:
+            rem = max_len - len(last) - 2
+            return (first[:rem] + "…/" + last) if rem > 0 else ("…/" + last)
+        return "…/" + last[:max(1, max_len - 3)] + "…"
+    if "@" in label:
+        prefix, _, rest = label.rpartition("@")
+        if len(rest) + 4 <= max_len:
+            rem = max_len - len(rest) - 2
+            return prefix[:rem] + "…@" + rest
+    return label[:max(3, max_len - 1)] + "…"
+
+
+def parse_plain(plain):
+    """Parse a plain list row into structured components."""
+    if plain == "Other folder…":
+        return {"kind": "other", "label": plain}
+    if "no sessions yet" in plain:
+        label, _, rest = plain.partition("no sessions yet")
+        return {"kind": "empty", "label": label.strip(), "badges": rest.strip()}
+    m = re.search(r"(?<=\s)(\d{1,3})%", plain)
+    if not m:
+        return {"kind": "raw", "label": plain}
+    label = plain[:m.start()].strip()
+    pct = m.group(1) + "%"
+    rest = plain[m.end():].strip()
+
+    badges_match = re.search(r"(?:[↑✎↓]\S*\s*)+$", rest)
+    badges = badges_match.group(0).strip() if badges_match else ""
+    if badges:
+        rest = rest[:badges_match.start()].strip()
+
+    is_refresh = "refresh?" in rest
+    if is_refresh:
+        rest = rest.replace("refresh?", "").strip()
+
+    time_m = re.search(r"\b(?:\d+\s*(?:min|h|d)\s*ago|yesterday)\b", rest)
+    ago = time_m.group(0) if time_m else ""
+
+    size_m = re.search(r"\b\d+\s*(?:KB|MB)\b", rest)
+    size = size_m.group(0) if size_m else ""
+
+    rep_m = re.search(r"\b\d+\s*replies\b", rest)
+    replies = rep_m.group(0) if rep_m else ""
+
+    return {
+        "kind": "session",
+        "label": label,
+        "pct": pct,
+        "replies": replies,
+        "size": size,
+        "ago": ago,
+        "refresh": is_refresh,
+        "badges": badges,
+    }
+
+
+def format_console_line(plain, width, use_colour=False):
+    """Format a menu row to fit cleanly within terminal width without wrapping or clipping."""
+    avail = max(20, width - 5)
+    if len(plain) <= avail:
+        return colour_line(plain, use_colour)
+    info = parse_plain(plain)
+    if info["kind"] == "other":
+        return info["label"][:avail]
+    if info["kind"] == "empty":
+        badges = (" " + info["badges"]) if info["badges"] else ""
+        text = "no sessions" + badges
+        max_label = max(8, avail - len(text) - 1)
+        lbl = fit_label(info["label"], max_label)
+        spaces = " " * max(1, avail - len(lbl) - len(text))
+        res = f"{lbl}{spaces}{text}"
+        return colour_line(res, use_colour)
+    if info["kind"] == "raw":
+        return colour_line(info["label"][:avail], use_colour)
+
+    pct = info["pct"]
+    badges = (" " + info["badges"]) if info["badges"] else ""
+    ref = " refresh?" if info["refresh"] else ""
+    ago = (" " + info["ago"]) if info["ago"] else ""
+    size = (" " + info["size"]) if info["size"] else ""
+    rep = (" " + info["replies"]) if info["replies"] else ""
+
+    candidates = [
+        f"{pct}  {rep}  {size}  {ago}{ref}{badges}",
+        f"{pct}  {size}  {ago}{ref}{badges}",
+        f"{pct}  {ago}{ref}{badges}",
+        f"{pct}{ref}{badges}",
+    ]
+    clean_candidates = [re.sub(r"  +", "  ", c).strip() for c in candidates]
+
+    min_label_space = max(14, avail // 2)
+    chosen_right = clean_candidates[-1]
+    for c in clean_candidates:
+        if avail - len(c) - 2 >= min_label_space:
+            chosen_right = c
+            break
+
+    max_label = max(8, avail - len(chosen_right) - 1)
+    lbl = fit_label(info["label"], max_label)
+    spaces = " " * max(1, avail - len(lbl) - len(chosen_right))
+    res = f"{lbl}{spaces}{chosen_right}"
+    return colour_line(res, use_colour)
+
+
+def matches(query, text):
+    """Fuzzy matching: substring, space-separated words, or character subsequence."""
+    q = query.lower().strip()
+    t = text.lower()
+    if not q:
+        return True
+    if q in t:
+        return True
+    words = q.split()
+    if len(words) > 1 and all(w in t for w in words):
+        return True
+    if len(q) >= 2:
+        pattern = ".*".join(map(re.escape, q))
+        if re.search(pattern, t):
+            return True
+    return False
+
+
 def console_menu(title, plains, ask=input, out=print, width=100, use_colour=False):
     """A numbered menu. A number picks a row, text filters the rows, Enter picks the first one
     shown, "/" shows all again, q or Ctrl+D leaves. Returns an index of plains, or None."""
     shown = list(range(len(plains)))
     while True:
+        is_interactive = (out is print and sys.stdout.isatty())
+        term_size = shutil.get_terminal_size((width, 24))
+        term_cols = term_size.columns if is_interactive else width
+        term_lines = term_size.lines if is_interactive else 999
+
+        if is_interactive:
+            out("\033[H\033[2J", end="")
+
         out(f"\n{title}")
-        for n, i in enumerate(shown, 1):
-            out(f"{n:>3}  " + colour_line(plains[i][:max(20, width - 6)], use_colour))
+        max_rows = max(5, term_lines - title.count("\n") - 4) if term_lines < 999 else len(shown)
+        display_shown = shown[:max_rows]
+        for n, i in enumerate(display_shown, 1):
+            out(f"{n:>3}  " + format_console_line(plains[i], term_cols, use_colour))
+        if len(shown) > len(display_shown):
+            out(f"     … ({len(shown) - len(display_shown)} more, type text to filter)")
+
+        prompt = "number, text to filter, Enter = 1, q = quit > " if term_cols >= 50 else "number, filter, Enter=1, q > "
         try:
-            ans = ask("number, text to filter, Enter = 1, q = quit > ").strip()
+            ans = ask(prompt).strip()
         except (EOFError, KeyboardInterrupt):
             return None
         if ans == "":
@@ -404,7 +557,7 @@ def console_menu(title, plains, ask=input, out=print, width=100, use_colour=Fals
                 return shown[int(ans) - 1]
             out(f"no row {ans}")
         else:
-            hit = [i for i in range(len(plains)) if ans.lower() in plains[i].lower()]
+            hit = [i for i in range(len(plains)) if matches(ans, plains[i])]
             if hit:
                 shown = hit
             else:
@@ -453,11 +606,17 @@ def run_console(found, ask=input, out=print, execute=os.execvp):
     """The two menus in the terminal, then the session starts in this same terminal."""
     if not sys.stdin.isatty() and ask is input:
         sys.exit("claudio: it needs a terminal to ask in (run it from a shell)")
-    width = shutil.get_terminal_size((100, 24)).columns
+    width = shutil.get_terminal_size((80, 24)).columns
     use_colour = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     rows = folder_rows(found)
-    legend = (f"green <{WARN_AT}%, yellow <{REFRESH_AT}%, red = start a new session "
-              f"(context of the last one)   ↑ not pushed  ✎ uncommitted  ↓ behind")
+    if width < 60:
+        legend = f"● <{WARN_AT}%  ● <{REFRESH_AT}%  ● ≥{REFRESH_AT}%   ↑ ✎ ↓ git"
+    elif width < 80:
+        legend = (f"green <{WARN_AT}%, yellow <{REFRESH_AT}%, red ≥{REFRESH_AT}% "
+                  f"(context)   ↑ not pushed  ✎ dirty  ↓ behind")
+    else:
+        legend = (f"green <{WARN_AT}%, yellow <{REFRESH_AT}%, red = start a new session "
+                  f"(context of the last one)   ↑ not pushed  ✎ uncommitted  ↓ behind")
     i = console_menu("Claude · pick a folder\n" + legend, [p for _, _, p in rows], ask, out, width, use_colour)
     if i is None:
         return

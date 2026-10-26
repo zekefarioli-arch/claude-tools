@@ -52,7 +52,7 @@ number, text to filter, Enter = 1, q = quit >
 
 In each menu, a number picks a row, any text filters the rows, Enter picks the first one shown, `/` shows all of them again and `q` leaves. "Other folder…" asks for a path, with Tab completion. `claude-pick` also falls back to this mode by itself when it finds no display or no rofi, so the key I bind never fails without telling me why.
 
-It is one program and not two: `claudio` only runs `claude-pick --console`, so the data and the rules live in one place, and a bug fixed in one is fixed in both. The price is that the filter is a plain substring, without the fuzzy matching that rofi has, and that it needs a real terminal to ask in.
+It is one program and not two: `claudio` only runs `claude-pick --console`, so the data and the rules live in one place, and a bug fixed in one is fixed in both. The menu supports fuzzy and multi-word filtering, and dynamically adapts row formatting and legends to narrow terminals (such as SSH from a phone) so percentages, git badges and refresh markers never get clipped or wrapped.
 
 ## Keeping the project up to date
 
